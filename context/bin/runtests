@@ -1,0 +1,78 @@
+#!/bin/bash
+
+. /usr/local/bin/common
+
+
+run_tests () {
+    local app
+    app="$1"
+    $COVERAGE run -a "${COVERAGEOPTS[@]}" "${ODOO[@]}" --test-enable -i "$app"
+}
+
+linting () {
+    local app
+    app="$1"
+    echo "Linting: addons/$app"
+    flake8 "addons/$app"
+}
+
+cleanup_pydeps () {
+    echo "Remove added pydeps: ${*}"
+    pip3 uninstall -y "${@}"
+}
+
+_runtests () {
+    local app preinstalled
+    app="$1"
+    shift
+    preinstalled=("${@}")
+    to_install=($(resolve_addons "$app" | tr '\n' ' '))
+    actually_installed=($(resolve_addons "${preinstalled[@]}" | tr '\n' ' '))
+    env_pydeps=$(resolve_pydeps "${actually_installed[@]}")
+    to_install=($(array_subtract "${to_install[@]}" :: "${actually_installed[@]}" | tr '\n' ' '))
+    pydeps=$(resolve_pydeps "${to_install[@]}")
+    to_install=($(array_subtract "${to_install[@]}" :: "${app}" | tr '\n' ' '))
+    install_str="${preinstalled[*]}"
+    if [ "${#to_install[@]}" -ne 0 ]; then
+	install_str+="  + ${to_install[*]}"
+    fi
+    pydep_str="${env_pydeps}"
+    if [ -n "$pydeps" ]; then
+	pydep_str+=" + ${pydeps}"
+    fi
+    echo ""
+    echo "===================================="
+    echo "Running tests"
+    echo "* db: $ODOO_DB <- $SQL_PATH"
+    echo "* addon: ${app}"
+    echo "* preinstalled: ${install_str}"
+    echo "* python eggs: ${pydep_str}"
+    echo "===================================="
+    echo ""
+    if [ -n "$pydeps" ]; then
+	echo "Required pydeps: ${pydeps}"
+	pip3 install "$pydeps"
+    fi
+    cd /mnt || exit 1
+    connect_to_db
+    create_db
+    load_db
+    if [ "${#to_install[@]}" -ne 0 ]; then
+	install_addons "${to_install[@]}"
+    fi
+    run_tests "$app"
+    testresult=$?
+    linting "$app"
+    lintingresult=$?
+    if [ -n "$pydeps" ]; then
+	cleanup_pydeps "$pydeps"
+    fi
+    cleanup_db
+    if [[ "$testresult" = "0" && "$lintingresult" = "0" ]]; then
+	return 0
+    else
+	return 1
+    fi
+}
+
+# _runtests "${@}" || exit 1

@@ -1,0 +1,216 @@
+#!/bin/bash
+
+ODOO_BIN=$(which odoo)
+ODOO_ADDONS=/mnt/addons
+ODOO_VERSION=${ODOO_VERSION:-13}
+ODOO_DB="${ODOO_DB:-odoo-test}"
+SQL_PATH="${SQL_PATH:-/var/lib/odoo/.cache/db/db-$ODOO_VERSION.sql}"
+COVERAGERC=${COVERAGERC:-/usr/local/share/coverage.cfg}
+COVERAGEDEBUG= # "config,dataio"
+COVERAGE="coverage"
+COVERAGEOPTS=("--debug=$COVERAGEDEBUG" "--rcfile=$COVERAGERC")
+COVERAGE_SEND=(${COVERAGE_SEND:-})
+# DB_ARGS="-h test-db -U odoo"
+
+
+if [[ -d /mnt/extra-addons && -n "$(ls -A /mnt/extra-addons)" ]]; then
+    ODOO_ADDONS="$ODOO_ADDONS,/mnt/extra-addons"
+fi
+
+ODOO=("$ODOO_BIN" -d "$ODOO_DB" --db_host=test-db --db_password=odoo --stop-after-init --addons-path="$ODOO_ADDONS")
+
+
+connect_to_db () {
+    export PGPASSWORD=odoo
+    while ! pg_isready -h test-db -U odoo 2> /dev/null; do
+	sleep 0.1
+    done
+}
+
+create_db () {
+    if [ ! "$(psql -h test-db -U odoo -lqt | cut -d\| -f1 | grep -qw "$ODOO_DB")" ]; then
+	createdb -h test-db -U odoo "$ODOO_DB"
+	echo "Created db: $ODOO_DB"
+    fi
+}
+
+load_db () {
+    if [ -f "$SQL_PATH" ]; then
+	psql -qt -o /dev/null -h test-db -U odoo -d "$ODOO_DB" -f "$SQL_PATH"
+    else
+	echo "No SQL file found: $SQL_PATH"
+    fi
+}
+
+dump_db () {
+    echo "Dumping DB($ODOO_DB) -> $SQL_PATH"
+    if [ ! -d "$(dirname "$SQL_PATH")" ]; then
+	mkdir -p "$(dirname "$SQL_PATH")"
+    fi
+    pg_dump -h test-db -U odoo "$ODOO_DB" > "$SQL_PATH"
+}
+
+resolve_pydeps () {
+    local app
+    deps=()
+    for app in ${@}; do
+        for dep in $(get_pydeps "$app"); do
+            deps+=("$dep")
+        done
+    done
+    if [ "${#deps[@]}" -ne 0 ]; then
+        echo "${deps[@]}" | tr ' ' '\n' | sort | uniq | tr '\n' ' '
+    fi
+}
+
+resolve_deps () {
+    local app dep deps
+    app="$1"
+    deps=$(get_deps "$app")
+    for dep in $deps; do
+	echo "$dep"
+	resolve_deps "$dep"
+    done
+}
+
+resolve_addons () {
+    deps=()
+    for app in "${@}"; do
+
+	deps+=("$app")
+	deps+=($(resolve_deps "$app" | tr '\n' ' '))
+    done
+    echo "${deps[@]}" | tr ' ' '\n' | sort | uniq | tr '\n' ' '
+}
+
+get_deps () {
+    local app path manifest
+    app="${1}"
+    if [ -d "addons/$app" ]; then
+	path=addons
+    elif [ -d "extra-addons/$app" ]; then
+	path=extra-addons
+    else
+	return
+    fi
+    manifest=$(cat "$path/$app/__manifest__.py")
+    export manifest
+    python3 -c "\
+import ast; \
+import sys; \
+[print(x) for x in ast.literal_eval(sys.argv[1])['depends']]" \
+       "$manifest"
+}
+
+get_pydeps () {
+    local app path manifest
+    app="${1}"
+    if [ -d "addons/$app" ]; then
+	path=addons
+    elif [ -d "extra-addons/$app" ]; then
+	path=extra-addons
+    else
+	exit 0
+    fi
+    manifest=$(cat "$path/$app/__manifest__.py")
+    export manifest
+    python3 -c "\
+import ast; \
+import sys; \
+[print(x) for x in ast.literal_eval(sys.argv[1]).get('external_dependencies', {}).get('python', [])]" \
+       "$manifest"
+}
+
+cleanup_db () {
+    dropdb -h test-db -U odoo "$ODOO_DB"
+}
+
+report_coverage () {
+    cd /mnt || exit 1
+    $COVERAGE report "${COVERAGEOPTS[@]}" -m
+    if [ "${#COVERAGE_SEND[@]}" -ne 0 ]; then
+	$COVERAGE xml "${COVERAGEOPTS[@]}" -o coverage/coverage.xml
+	"${COVERAGE_SEND[@]}"
+    else
+	echo "No coverage collection configured, not sending"
+    fi
+}
+
+install_addons () {
+    # echo "Preinstalling: ${@}"
+    "${ODOO[@]}" --log-level=warn -i "$(echo "${@}" | tr ' ' ',')"
+}
+
+install_and_dump () {
+    cd /mnt || exit 1
+    connect_to_db
+    addons=$(resolve_addons "${@}")
+    pydeps=$(resolve_pydeps "${addons}")
+    echo ""
+    echo "===================================="
+    echo "Load environment"
+    echo "* db: ${ODOO_DB} <-> ${SQL_PATH}"
+    echo "* preinstall: ${*}"
+    echo "* python eggs: ${pydeps}"
+    echo "===================================="
+    echo
+    pip3 install "$pydeps"
+    if [ -f "$SQL_PATH" ]; then
+	echo "SQL exists already, exiting"
+	# rm "$SQL_PATH"
+	return
+    fi
+    create_db
+    install_addons "${@}"
+    dump_db
+    cleanup_db
+}
+
+array_intersect () {
+    delimiter="::"
+    arr1=()
+    arr2=()
+    for item in "${@}"; do
+	if [ "$item" == "$delimiter" ]; then
+	    delimiter_found=1
+	elif [ -z "$delimiter_found" ]; then
+	    arr1+=("$item")
+	else
+	    arr2+=("$item")
+	fi
+    done
+    for item1 in "${arr1[@]}"; do
+	for item2 in "${arr2[@]}"; do
+	    if [ "$item1" = "$item2" ]; then
+		echo "$item1"
+	    fi
+	done
+    done
+}
+
+array_subtract () {
+    delimiter="::"
+    arr1=()
+    arr2=()
+    for item in "${@}"; do
+	if [ "$item" == "$delimiter" ]; then
+	    delimiter_found=1
+	elif [ -z "$delimiter_found" ]; then
+	    arr1+=("$item")
+	else
+	    arr2+=("$item")
+	fi
+    done
+    for item1 in "${arr1[@]}"; do
+	item_found=""
+	for item2 in "${arr2[@]}"; do
+	    if [ "$item1" = "$item2" ]; then
+		item_found=1
+		break
+	    fi
+	done
+	if [ -z "$item_found" ]; then
+	    echo "$item1"
+	fi
+    done
+}

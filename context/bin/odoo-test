@@ -1,0 +1,57 @@
+#!/bin/bash
+
+. /usr/local/bin/common
+. /usr/local/bin/runtests
+
+PROGRAM=$0
+
+usage () {
+    cat <<EOF
+
+    ${PROGRAM} [-i] COMMAND
+
+    Commands:
+
+    test		    Run tests for specified addons
+EOF
+}
+
+
+while getopts ":i:" opt; do
+    case ${opt} in
+	i )
+	    PREINSTALL+=("$OPTARG")
+	    ;;
+	\? )
+	    usage
+	    ;;
+    esac
+done
+
+
+shift $((OPTIND -1))
+
+ARG=$1
+shift
+
+case "$ARG" in
+    test )
+	if [ "${#PREINSTALL[@]}" -ne 0 ]; then
+	    install_and_dump "${PREINSTALL[@]}"
+	fi
+	for addon in $(echo "$1" | tr ',' ' '); do
+    	    _runtests "$addon" "${PREINSTALL[@]}"
+	    testresult="$?"
+	    if [ "$testresult" != "0" ]; then
+	       echo "Test failure: ${addon}: exited with ${testresult}"
+	       failed=1
+	    fi
+	done
+	if [ -z "$failed" ]; then
+	    report_coverage
+	else
+	    echo "Tests failed: not reporting coverage"
+	    exit 1
+	fi
+        ;;
+esac
