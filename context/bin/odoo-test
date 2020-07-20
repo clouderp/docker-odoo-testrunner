@@ -3,6 +3,9 @@
 . /usr/local/bin/common
 . /usr/local/bin/runtests
 
+
+trap "exit" INT
+
 PROGRAM=$0
 
 usage () {
