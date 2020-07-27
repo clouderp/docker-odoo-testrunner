@@ -140,10 +140,11 @@ install_addons () {
     # echo "Preinstalling: ${@}"
     local demo_flag
     echo "INSTALLING: $ODOO_VERSION"
-    if [ "$ODOO_VERSION" -ne 12 ]; then
-	demo_flag="--without-demo=False"
+    if [ "$ODOO_VERSION" != "12.0" ]; then
+	"${ODOO[@]}" --without-demo=False --log-level=warn -i "$(echo "${@}" | tr ' ' ',')"
+    else
+	"${ODOO[@]}" --log-level=warn -i "$(echo "${@}" | tr ' ' ',')"
     fi
-    "${ODOO[@]}" "$demo_flag" --log-level=warn -i "$(echo "${@}" | tr ' ' ',')"
 }
 
 install_and_dump () {
