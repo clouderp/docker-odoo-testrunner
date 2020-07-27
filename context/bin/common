@@ -139,7 +139,8 @@ report_coverage () {
 install_addons () {
     # echo "Preinstalling: ${@}"
     local demo_flag
-    if [ "$ODOO_VERSION" -ne "12" ]; then
+    echo "INSTALLING: $ODOO_VERSION"
+    if [ "$ODOO_VERSION" -ne 12 ]; then
 	demo_flag="--without-demo=False"
     fi
     "${ODOO[@]}" "$demo_flag" --log-level=warn -i "$(echo "${@}" | tr ' ' ',')"
